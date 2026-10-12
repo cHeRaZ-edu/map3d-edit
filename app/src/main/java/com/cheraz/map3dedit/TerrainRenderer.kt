@@ -110,6 +110,75 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         Matrix.perspectiveM(proj, 0, 55f, aspect, 0.1f, 300f)
     }
 
+    // ---------- Modo caminar ----------
+
+    @Volatile var walkMode = false
+    /** Joystick izquierdo: moveX derecha+, moveY adelante+ (rango -1..1). */
+    @Volatile var moveX = 0f
+    @Volatile var moveY = 0f
+    /** Joystick derecho: lookX derecha+, lookY arriba+ (rango -1..1). */
+    @Volatile var lookX = 0f
+    @Volatile var lookY = 0f
+
+    private var px = 0f
+    private var pz = 0f
+    private var yawW = 0f
+    private var pitchW = 0f
+    private var eyeY = 0f
+    private var eyeInit = false
+    private var lastNanos = 0L
+
+    private val eyeHeight = 0.9f
+    private val walkSpeed = 3f
+
+    private fun setupCamera() {
+        if (!walkMode) {
+            lastNanos = 0L
+            eyeInit = false
+            val yawRad = Math.toRadians(yaw.toDouble())
+            val pitchRad = Math.toRadians(pitch.toDouble())
+            val d = dist
+            val ex = (d * cos(pitchRad) * sin(yawRad)).toFloat()
+            val ey = (d * sin(pitchRad)).toFloat()
+            val ez = (d * cos(pitchRad) * cos(yawRad)).toFloat()
+            Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, 0f, 0f, 0f, 1f, 0f)
+            return
+        }
+
+        val now = System.nanoTime()
+        val dt = if (lastNanos == 0L) 0f else ((now - lastNanos) / 1e9f).coerceAtMost(0.1f)
+        lastNanos = now
+
+        yawW += lookX * 100f * dt
+        pitchW = (pitchW + lookY * 70f * dt).coerceIn(-80f, 80f)
+
+        val yr = Math.toRadians(yawW.toDouble())
+        val fx = sin(yr).toFloat()
+        val fz = -cos(yr).toFloat()
+        val rx = cos(yr).toFloat()
+        val rz = sin(yr).toFloat()
+
+        px += (fx * moveY + rx * moveX) * walkSpeed * dt
+        pz += (fz * moveY + rz * moveX) * walkSpeed * dt
+        val lim = terrain.size / 2f - 0.2f
+        px = px.coerceIn(-lim, lim)
+        pz = pz.coerceIn(-lim, lim)
+
+        val targetY = terrain.heightAtWorld(px, pz) + eyeHeight
+        if (!eyeInit) {
+            eyeY = targetY
+            eyeInit = true
+        } else {
+            eyeY += (targetY - eyeY) * (1f - Math.exp(-12.0 * dt).toFloat())
+        }
+
+        val pr = Math.toRadians(pitchW.toDouble())
+        val lx = fx * cos(pr).toFloat()
+        val ly = sin(pr).toFloat()
+        val lz = fz * cos(pr).toFloat()
+        Matrix.setLookAtM(view, 0, px, eyeY, pz, px + lx, eyeY + ly, pz + lz, 0f, 1f, 0f)
+    }
+
     private fun uploadVertices() {
         val vertices = terrain.buildVertices()
         val vb = ByteBuffer.allocateDirect(vertices.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
@@ -125,13 +194,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         }
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
-        val yawRad = Math.toRadians(yaw.toDouble())
-        val pitchRad = Math.toRadians(pitch.toDouble())
-        val d = dist
-        val ex = (d * cos(pitchRad) * sin(yawRad)).toFloat()
-        val ey = (d * sin(pitchRad)).toFloat()
-        val ez = (d * cos(pitchRad) * cos(yawRad)).toFloat()
-        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, 0f, 0f, 0f, 1f, 0f)
+        setupCamera()
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
         GLES30.glUseProgram(program)

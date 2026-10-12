@@ -111,6 +111,26 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
         return top + (bottom - top) * v
     }
 
+    // ---------- Consulta de altura ----------
+
+    /** Altura en coordenadas de mundo, interpolación bilineal. */
+    fun heightAtWorld(x: Float, z: Float): Float {
+        val h = heights
+        val fx = ((x + size / 2f) / step).coerceIn(0f, n - 1.001f)
+        val fz = ((z + size / 2f) / step).coerceIn(0f, n - 1.001f)
+        val x0 = fx.toInt()
+        val z0 = fz.toInt()
+        val tx = fx - x0
+        val tz = fz - z0
+        val a = h[z0 * n + x0]
+        val b = h[z0 * n + x0 + 1]
+        val c = h[(z0 + 1) * n + x0]
+        val d = h[(z0 + 1) * n + x0 + 1]
+        val top = a + (b - a) * tx
+        val bottom = c + (d - c) * tx
+        return top + (bottom - top) * tz
+    }
+
     // ---------- Malla ----------
 
     private fun heightAt(h: FloatArray, x: Int, z: Int): Float =

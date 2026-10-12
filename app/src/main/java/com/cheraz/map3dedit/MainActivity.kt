@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -26,6 +27,7 @@ class MainActivity : Activity() {
     private var lastPointerCount = 0
 
     private lateinit var scaleDetector: ScaleGestureDetector
+    private lateinit var overlay: JoystickOverlay
 
     private val pickImageCode = 1001
 
@@ -53,6 +55,15 @@ class MainActivity : Activity() {
 
         val root = FrameLayout(this)
         root.addView(glView)
+
+        overlay = JoystickOverlay(
+            this,
+            onMove = { x, y -> renderer.moveX = x; renderer.moveY = y },
+            onLook = { x, y -> renderer.lookX = x; renderer.lookY = y }
+        ).apply { visibility = View.GONE }
+        root.addView(overlay)
+
+        // La barra va al final para quedar encima de los joysticks y recibir sus toques
         root.addView(buildToolbar())
         setContentView(root)
     }
@@ -82,6 +93,21 @@ class MainActivity : Activity() {
                 startActivityForResult(intent, pickImageCode)
             }
         }
+        val modeBtn = Button(this).apply {
+            text = "Caminar"
+            setOnClickListener {
+                val walk = !renderer.walkMode
+                renderer.walkMode = walk
+                if (walk) {
+                    overlay.visibility = View.VISIBLE
+                } else {
+                    overlay.visibility = View.GONE
+                    overlay.reset()
+                }
+                text = if (walk) "Orbitar" else "Caminar"
+            }
+        }
+        bar.addView(modeBtn)
         bar.addView(noiseBtn)
         bar.addView(pngBtn)
 
