@@ -27,7 +27,7 @@ class MainActivity : Activity() {
     private var lastPointerCount = 0
 
     private lateinit var scaleDetector: ScaleGestureDetector
-    private lateinit var overlay: JoystickOverlay
+    private lateinit var joystickOverlay: JoystickOverlay
 
     private val pickImageCode = 1001
 
@@ -56,12 +56,12 @@ class MainActivity : Activity() {
         val root = FrameLayout(this)
         root.addView(glView)
 
-        overlay = JoystickOverlay(
+        joystickOverlay = JoystickOverlay(
             this,
             onMove = { x, y -> renderer.moveX = x; renderer.moveY = y },
             onLook = { x, y -> renderer.lookX = x; renderer.lookY = y }
         ).apply { visibility = View.GONE }
-        root.addView(overlay)
+        root.addView(joystickOverlay)
 
         // La barra va al final para quedar encima de los joysticks y recibir sus toques
         root.addView(buildToolbar())
@@ -99,10 +99,10 @@ class MainActivity : Activity() {
                 val walk = !renderer.walkMode
                 renderer.walkMode = walk
                 if (walk) {
-                    overlay.visibility = View.VISIBLE
+                    joystickOverlay.visibility = View.VISIBLE
                 } else {
-                    overlay.visibility = View.GONE
-                    overlay.reset()
+                    joystickOverlay.visibility = View.GONE
+                    joystickOverlay.reset()
                 }
                 text = if (walk) "Orbitar" else "Caminar"
             }
