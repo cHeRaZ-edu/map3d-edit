@@ -24,7 +24,15 @@ jobs:
           gradle-version: 8.7
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # Si falla, deja los errores del compilador como anotaciones (legibles por API)
+      - name: Report compile errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong" -A2 build.log | head -40 | sed 's/^/::error::/' || true
 
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk map3d-edit-debug.apk
