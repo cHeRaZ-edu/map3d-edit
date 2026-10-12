@@ -131,15 +131,98 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
         return top + (bottom - top) * tz
     }
 
+    // ---------- Esculpir ----------
+
+    companion object {
+        const val TOOL_RAISE = 0
+        const val TOOL_LOWER = 1
+        const val TOOL_SMOOTH = 2
+        const val TOOL_FLATTEN = 3
+    }
+
+    /**
+     * Aplica el pincel in-place. strength = unidades de altura por segundo en el centro.
+     * target = altura de referencia para la herramienta de aplanar.
+     */
+    fun brush(tool: Int, cx: Float, cz: Float, radius: Float, strength: Float, dt: Float, target: Float) {
+        val h = heights
+        val half = size / 2f
+        val x0 = ((cx - radius + half) / step).toInt().coerceIn(0, n - 1)
+        val x1 = (((cx + radius + half) / step).toInt() + 1).coerceIn(0, n - 1)
+        val z0 = ((cz - radius + half) / step).toInt().coerceIn(0, n - 1)
+        val z1 = (((cz + radius + half) / step).toInt() + 1).coerceIn(0, n - 1)
+        val src = if (tool == TOOL_SMOOTH) h.copyOf() else h
+        val lim = heightRange * 0.75f
+
+        for (z in z0..z1) {
+            for (x in x0..x1) {
+                val dx = x * step - half - cx
+                val dz = z * step - half - cz
+                val dist = sqrt(dx * dx + dz * dz)
+                if (dist >= radius) continue
+                val t = 1f - dist / radius
+                val w = t * t * (3f - 2f * t)
+                val i = z * n + x
+                var v = h[i]
+                when (tool) {
+                    TOOL_RAISE -> v += strength * dt * w
+                    TOOL_LOWER -> v -= strength * dt * w
+                    TOOL_SMOOTH -> {
+                        var sum = 0f
+                        for (oz in -1..1) for (ox in -1..1) sum += heightAt(src, x + ox, z + oz)
+                        val avg = sum / 9f
+                        v += (avg - src[i]) * (strength * dt * w * 4f).coerceAtMost(1f)
+                    }
+                    TOOL_FLATTEN -> v += (target - v) * (strength * dt * w * 3f).coerceAtMost(1f)
+                }
+                h[i] = v.coerceIn(-lim, lim)
+            }
+        }
+    }
+
+    /** Rayo contra el terreno (marcha + bisección). Devuelve el punto de impacto x,y,z o null. */
+    fun raycast(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, maxDist: Float = 250f): FloatArray? {
+        val half = size / 2f
+        val stepLen = step * 0.5f
+        var t = 0f
+        var prevT = 0f
+        var prevAbove = false
+        var havePrev = false
+        while (t < maxDist) {
+            val x = ox + dx * t
+            val y = oy + dy * t
+            val z = oz + dz * t
+            if (x >= -half && x <= half && z >= -half && z <= half) {
+                val above = y > heightAtWorld(x, z)
+                if (havePrev && prevAbove && !above) {
+                    var lo = prevT
+                    var hi = t
+                    repeat(8) {
+                        val mid = (lo + hi) / 2f
+                        val my = oy + dy * mid
+                        if (my > heightAtWorld(ox + dx * mid, oz + dz * mid)) lo = mid else hi = mid
+                    }
+                    return floatArrayOf(ox + dx * hi, oy + dy * hi, oz + dz * hi)
+                }
+                prevAbove = above
+                prevT = t
+                havePrev = true
+            } else {
+                havePrev = false
+            }
+            t += stepLen
+        }
+        return null
+    }
+
     // ---------- Malla ----------
 
     private fun heightAt(h: FloatArray, x: Int, z: Int): Float =
         h[z.coerceIn(0, n - 1) * n + x.coerceIn(0, n - 1)]
 
     /** Vértices intercalados: x, y, z, nx, ny, nz */
-    fun buildVertices(): FloatArray {
+    fun buildVertices(out: FloatArray = FloatArray(n * n * 6)): FloatArray {
         val h = heights
-        val out = FloatArray(n * n * 6)
         var i = 0
         for (z in 0 until n) {
             for (x in 0 until n) {

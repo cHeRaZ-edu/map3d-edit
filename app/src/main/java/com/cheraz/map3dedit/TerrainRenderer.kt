@@ -106,6 +106,8 @@ class TerrainRenderer : GLSurfaceView.Renderer {
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
+        viewW = width
+        viewH = height
         val aspect = width.toFloat() / height.toFloat()
         Matrix.perspectiveM(proj, 0, 55f, aspect, 0.1f, 300f)
     }
@@ -179,15 +181,83 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         Matrix.setLookAtM(view, 0, px, eyeY, pz, px + lx, eyeY + ly, pz + lz, 0f, 1f, 0f)
     }
 
+    // Buffers reutilizados: al esculpir se re-sube la malla en cada frame.
+    private val vertArr = FloatArray(terrain.n * terrain.n * 6)
+    private val vertBuf = ByteBuffer.allocateDirect(vertArr.size * 4)
+        .order(ByteOrder.nativeOrder()).asFloatBuffer()
+
     private fun uploadVertices() {
-        val vertices = terrain.buildVertices()
-        val vb = ByteBuffer.allocateDirect(vertices.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
-        vb.put(vertices).position(0)
+        terrain.buildVertices(vertArr)
+        vertBuf.clear()
+        vertBuf.put(vertArr)
+        vertBuf.position(0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
-        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, vertices.size * 4, vb)
+        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, vertArr.size * 4, vertBuf)
+    }
+
+    // ---------- Esculpir ----------
+
+    @Volatile var sculptEnabled = false
+    /** Dedo presionado en modo esculpir; sculptX/Y son coordenadas de pantalla en píxeles. */
+    @Volatile var sculptActive = false
+    @Volatile var sculptX = 0f
+    @Volatile var sculptY = 0f
+    @Volatile var tool = Terrain.TOOL_RAISE
+    @Volatile var brushRadius = 2f
+    @Volatile var brushStrength = 1.5f
+
+    private var viewW = 1
+    private var viewH = 1
+    private var sculptLastNanos = 0L
+    private var strokeStarted = false
+    private var flattenTarget = 0f
+
+    private fun sculptStep() {
+        if (!(sculptEnabled && sculptActive && !walkMode)) {
+            sculptLastNanos = 0L
+            strokeStarted = false
+            return
+        }
+        val now = System.nanoTime()
+        val dt = if (sculptLastNanos == 0L) 0.016f else ((now - sculptLastNanos) / 1e9f).coerceAtMost(0.05f)
+        sculptLastNanos = now
+
+        val ray = screenRay(sculptX, sculptY) ?: return
+        val hit = terrain.raycast(ray[0], ray[1], ray[2], ray[3], ray[4], ray[5]) ?: return
+        if (!strokeStarted) {
+            flattenTarget = hit[1]
+            strokeStarted = true
+        }
+        terrain.brush(tool, hit[0], hit[2], brushRadius, brushStrength, dt, flattenTarget)
+        dirty = true
+    }
+
+    /** Rayo desde un punto de pantalla: origen (x,y,z) y dirección normalizada (x,y,z). */
+    private fun screenRay(sx: Float, sy: Float): FloatArray? {
+        val vp = FloatArray(16)
+        Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+        val inv = FloatArray(16)
+        if (!Matrix.invertM(inv, 0, vp, 0)) return null
+        val nx = 2f * sx / viewW - 1f
+        val ny = 1f - 2f * sy / viewH
+        val near = FloatArray(4)
+        val far = FloatArray(4)
+        Matrix.multiplyMV(near, 0, inv, 0, floatArrayOf(nx, ny, -1f, 1f), 0)
+        Matrix.multiplyMV(far, 0, inv, 0, floatArrayOf(nx, ny, 1f, 1f), 0)
+        for (k in 0..2) {
+            near[k] /= near[3]
+            far[k] /= far[3]
+        }
+        var dx = far[0] - near[0]
+        var dy = far[1] - near[1]
+        var dz = far[2] - near[2]
+        val len = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+        dx /= len; dy /= len; dz /= len
+        return floatArrayOf(near[0], near[1], near[2], dx, dy, dz)
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        sculptStep()
         if (dirty) {
             dirty = false
             uploadVertices()

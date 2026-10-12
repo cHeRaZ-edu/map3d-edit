@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -11,9 +12,12 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import kotlin.random.Random
 
@@ -25,11 +29,18 @@ class MainActivity : Activity() {
     private var lastX = 0f
     private var lastY = 0f
     private var lastPointerCount = 0
+    private var sculptBlocked = false
 
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var joystickOverlay: JoystickOverlay
+    private lateinit var sculptPanel: LinearLayout
+    private lateinit var walkBtn: Button
+    private lateinit var sculptBtn: Button
+    private val toolButtons = mutableListOf<Button>()
 
     private val pickImageCode = 1001
+    private val matchParent = ViewGroup.LayoutParams.MATCH_PARENT
+    private val wrapContent = ViewGroup.LayoutParams.WRAP_CONTENT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,7 +55,7 @@ class MainActivity : Activity() {
         glView = object : GLSurfaceView(this) {
             override fun onTouchEvent(event: MotionEvent): Boolean {
                 scaleDetector.onTouchEvent(event)
-                handleOrbit(event)
+                if (renderer.sculptEnabled) handleSculpt(event) else handleOrbit(event)
                 return true
             }
         }.apply {
@@ -70,21 +81,40 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    // ---------- UI ----------
+
+    private fun smallButton(label: String): Button = Button(this).apply {
+        text = label
+        textSize = 11f
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(dp(10), 0, dp(10), 0)
+    }
+
     private fun buildToolbar(): LinearLayout {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(56))
         }
 
-        val noiseBtn = Button(this).apply {
-            text = "Ruido nuevo"
+        sculptPanel = buildSculptPanel()
+        container.addView(sculptPanel, LinearLayout.LayoutParams(matchParent, wrapContent))
+
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+
+        walkBtn = smallButton("Caminar").apply {
+            setOnClickListener { setWalk(!renderer.walkMode) }
+        }
+        sculptBtn = smallButton("Esculpir").apply {
+            setOnClickListener { setSculpt(!renderer.sculptEnabled) }
+        }
+        val noiseBtn = smallButton("Ruido nuevo").apply {
             setOnClickListener {
                 renderer.terrain.generateNoise(seed = Random.nextInt(1, 100000))
                 renderer.requestUpdate()
             }
         }
-        val pngBtn = Button(this).apply {
-            text = "Cargar PNG"
+        val pngBtn = smallButton("Cargar PNG").apply {
             setOnClickListener {
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
@@ -93,31 +123,90 @@ class MainActivity : Activity() {
                 startActivityForResult(intent, pickImageCode)
             }
         }
-        val modeBtn = Button(this).apply {
-            text = "Caminar"
-            setOnClickListener {
-                val walk = !renderer.walkMode
-                renderer.walkMode = walk
-                if (walk) {
-                    joystickOverlay.visibility = View.VISIBLE
-                } else {
-                    joystickOverlay.visibility = View.GONE
-                    joystickOverlay.reset()
-                }
-                text = if (walk) "Orbitar" else "Caminar"
-            }
-        }
-        bar.addView(modeBtn)
+        bar.addView(walkBtn)
+        bar.addView(sculptBtn)
         bar.addView(noiseBtn)
         bar.addView(pngBtn)
+        container.addView(bar)
 
-        bar.layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.BOTTOM or Gravity.START
-        )
-        return bar
+        container.layoutParams = FrameLayout.LayoutParams(matchParent, wrapContent, Gravity.BOTTOM)
+        return container
     }
+
+    private fun buildSculptPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(130, 0, 0, 0))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            isClickable = true // que los toques sobre el panel no lleguen al terreno
+            visibility = View.GONE
+        }
+
+        val toolRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("Subir", "Bajar", "Suavizar", "Aplanar").forEachIndexed { idx, name ->
+            val b = smallButton(name).apply { setOnClickListener { selectTool(idx) } }
+            toolButtons.add(b)
+            toolRow.addView(b, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        }
+        panel.addView(toolRow)
+
+        // Radio 0.5..4 u (default ~2), fuerza 0.2..4 u/s (default ~1.5)
+        panel.addView(labeledSeek("Radio", 43) { p -> renderer.brushRadius = 0.5f + p / 100f * 3.5f })
+        panel.addView(labeledSeek("Fuerza", 34) { p -> renderer.brushStrength = 0.2f + p / 100f * 3.8f })
+
+        selectTool(Terrain.TOOL_RAISE)
+        return panel
+    }
+
+    private fun labeledSeek(label: String, initial: Int, onChange: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = TextView(this).apply {
+            text = label
+            setTextColor(Color.WHITE)
+        }
+        val slider = SeekBar(this).apply {
+            max = 100
+            progress = initial
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { onChange(p) }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }
+        row.addView(title, LinearLayout.LayoutParams(dp(64), wrapContent))
+        row.addView(slider, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        return row
+    }
+
+    private fun selectTool(idx: Int) {
+        renderer.tool = idx
+        toolButtons.forEachIndexed { i, b -> b.alpha = if (i == idx) 1f else 0.5f }
+    }
+
+    private fun setWalk(walk: Boolean) {
+        if (walk && renderer.sculptEnabled) setSculpt(false)
+        renderer.walkMode = walk
+        if (walk) {
+            joystickOverlay.visibility = View.VISIBLE
+        } else {
+            joystickOverlay.visibility = View.GONE
+            joystickOverlay.reset()
+        }
+        walkBtn.text = if (walk) "Orbitar" else "Caminar"
+    }
+
+    private fun setSculpt(on: Boolean) {
+        if (on && renderer.walkMode) setWalk(false)
+        renderer.sculptEnabled = on
+        if (!on) renderer.sculptActive = false
+        sculptPanel.visibility = if (on) View.VISIBLE else View.GONE
+        sculptBtn.text = if (on) "Esculpir ●" else "Esculpir"
+    }
+
+    // ---------- PNG ----------
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -147,7 +236,9 @@ class MainActivity : Activity() {
         }
     }
 
-    // Un dedo: orbitar. Dos dedos: solo pinch (zoom).
+    // ---------- Gestos ----------
+
+    // Cámara orbital: un dedo orbita, pinch hace zoom.
     private fun handleOrbit(event: MotionEvent) {
         val count = event.pointerCount
         when (event.actionMasked) {
@@ -174,6 +265,65 @@ class MainActivity : Activity() {
             }
         }
         lastPointerCount = if (event.actionMasked == MotionEvent.ACTION_UP) 0 else count
+    }
+
+    /** Centroide de los dedos, ignorando el índice `skip` (el que se está levantando). */
+    private fun centroid(e: MotionEvent, skip: Int = -1): Pair<Float, Float> {
+        var sx = 0f
+        var sy = 0f
+        var c = 0
+        for (i in 0 until e.pointerCount) {
+            if (i == skip) continue
+            sx += e.getX(i)
+            sy += e.getY(i)
+            c++
+        }
+        return if (c == 0) Pair(0f, 0f) else Pair(sx / c, sy / c)
+    }
+
+    // Esculpir: un dedo pinta; dos dedos orbitan (centroide) y pinch hace zoom.
+    private fun handleSculpt(e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                sculptBlocked = false
+                renderer.sculptX = e.x
+                renderer.sculptY = e.y
+                renderer.sculptActive = true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                sculptBlocked = true
+                renderer.sculptActive = false
+                val (cx, cy) = centroid(e)
+                lastX = cx
+                lastY = cy
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (e.pointerCount == 1) {
+                    if (!sculptBlocked) {
+                        renderer.sculptX = e.x
+                        renderer.sculptY = e.y
+                        renderer.sculptActive = true
+                    }
+                } else {
+                    val (cx, cy) = centroid(e)
+                    renderer.yaw -= (cx - lastX) * 0.4f
+                    renderer.pitch = (renderer.pitch + (cy - lastY) * 0.4f).coerceIn(5f, 85f)
+                    lastX = cx
+                    lastY = cy
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                sculptBlocked = true
+                renderer.sculptActive = false
+                val (cx, cy) = centroid(e, skip = e.actionIndex)
+                lastX = cx
+                lastY = cy
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                renderer.sculptActive = false
+                sculptBlocked = false
+            }
+        }
     }
 
     override fun onPause() {
