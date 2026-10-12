@@ -17,11 +17,20 @@ class TerrainRenderer : GLSurfaceView.Renderer {
     @Volatile var pitch = 35f
     @Volatile var dist = 28f
 
-    private val terrain = Terrain(n = 128, size = 20f)
+    val terrain = Terrain(n = 128, size = 20f)
+
+    /** Se pone en true cuando el heightmap cambió; el hilo GL re-sube los vértices. */
+    @Volatile private var dirty = false
+
+    fun requestUpdate() {
+        dirty = true
+    }
 
     private var program = 0
     private var uMvp = 0
     private var uLight = 0
+    private var uMinH = 0
+    private var uMaxH = 0
     private var vbo = 0
     private var ibo = 0
     private var indexCount = 0
@@ -50,6 +59,8 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         in vec3 vNormal;
         in float vHeight;
         uniform vec3 uLight;
+        uniform float uMinH;
+        uniform float uMaxH;
         out vec4 outColor;
         void main() {
             float diff = max(dot(normalize(vNormal), normalize(uLight)), 0.0);
@@ -57,7 +68,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
             vec3 low  = vec3(0.20, 0.45, 0.20);
             vec3 mid  = vec3(0.55, 0.50, 0.30);
             vec3 high = vec3(0.90, 0.90, 0.92);
-            float t = clamp((vHeight + 2.0) / 4.0, 0.0, 1.0);
+            float t = clamp((vHeight - uMinH) / (uMaxH - uMinH), 0.0, 1.0);
             vec3 base = t < 0.5 ? mix(low, mid, t * 2.0) : mix(mid, high, (t - 0.5) * 2.0);
             outColor = vec4(base * light, 1.0);
         }
@@ -70,6 +81,8 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         program = buildProgram(vertexShader, fragmentShader)
         uMvp = GLES30.glGetUniformLocation(program, "uMvp")
         uLight = GLES30.glGetUniformLocation(program, "uLight")
+        uMinH = GLES30.glGetUniformLocation(program, "uMinH")
+        uMaxH = GLES30.glGetUniformLocation(program, "uMaxH")
 
         val vertices = terrain.buildVertices()
         val indices = terrain.buildIndices()
@@ -97,7 +110,19 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         Matrix.perspectiveM(proj, 0, 55f, aspect, 0.1f, 300f)
     }
 
+    private fun uploadVertices() {
+        val vertices = terrain.buildVertices()
+        val vb = ByteBuffer.allocateDirect(vertices.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        vb.put(vertices).position(0)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
+        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, vertices.size * 4, vb)
+    }
+
     override fun onDrawFrame(gl: GL10?) {
+        if (dirty) {
+            dirty = false
+            uploadVertices()
+        }
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
         val yawRad = Math.toRadians(yaw.toDouble())
@@ -112,6 +137,8 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         GLES30.glUseProgram(program)
         GLES30.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
         GLES30.glUniform3f(uLight, 0.5f, 1.0f, 0.3f)
+        GLES30.glUniform1f(uMinH, terrain.minH)
+        GLES30.glUniform1f(uMaxH, terrain.maxH)
 
         val stride = 6 * 4
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
