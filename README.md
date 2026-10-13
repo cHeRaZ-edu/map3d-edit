@@ -8,7 +8,8 @@ Mini motor gráfico para Android (Kotlin + OpenGL ES 3.0) para crear y esculpir 
 - [x] Etapa 1: terreno base con luz simple y cámara orbital (1 dedo orbita, pinch hace zoom)
 - [x] Etapa 2: heightmap desde PNG (selector de archivos) y ruido fBm con semilla
 - [x] Etapa 3: caminar sobre el terreno (joystick izquierdo mueve, derecho mira)
-- [x] Etapa 4: esculpir (subir, bajar, suavizar, aplanar) con radio y fuerza ajustables
+- [x] Etapa 4: esculpir (subir, bajar, suavizar, aplanar, rugoso, terraza) con radio y fuerza ajustables,
+      cursor del pincel, deshacer/rehacer (40 pasos), terreno 256x256 en 40x40 u
 - [x] Etapa 5: guardar y exportar (autoguardado, proyecto .m3d, PNG 16 bits, .raw, .obj)
 
 ## APK

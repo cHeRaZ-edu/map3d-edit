@@ -58,7 +58,7 @@ class MainActivity : Activity() {
 
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
-                renderer.dist = (renderer.dist / detector.scaleFactor).coerceIn(5f, 80f)
+                renderer.dist = (renderer.dist / detector.scaleFactor).coerceIn(5f, 150f)
                 return true
             }
         })
@@ -121,8 +121,8 @@ class MainActivity : Activity() {
         }
         val noiseBtn = smallButton("Ruido nuevo").apply {
             setOnClickListener {
-                renderer.terrain.generateNoise(seed = Random.nextInt(1, 100000))
-                renderer.requestUpdate()
+                val seed = Random.nextInt(1, 100000)
+                renderer.replaceTerrain { it.generateNoise(seed = seed) }
             }
         }
         val pngBtn = smallButton("Cargar PNG").apply {
@@ -163,16 +163,23 @@ class MainActivity : Activity() {
         }
 
         val toolRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("Subir", "Bajar", "Suavizar", "Aplanar").forEachIndexed { idx, name ->
+        listOf("Subir", "Bajar", "Suavizar", "Aplanar", "Rugoso", "Terraza").forEachIndexed { idx, name ->
             val b = smallButton(name).apply { setOnClickListener { selectTool(idx) } }
             toolButtons.add(b)
             toolRow.addView(b, LinearLayout.LayoutParams(0, wrapContent, 1f))
         }
         panel.addView(toolRow)
 
-        // Radio 0.5..4 u (default ~2), fuerza 0.2..4 u/s (default ~1.5)
-        panel.addView(labeledSeek("Radio", 43) { p -> renderer.brushRadius = 0.5f + p / 100f * 3.5f })
-        panel.addView(labeledSeek("Fuerza", 34) { p -> renderer.brushStrength = 0.2f + p / 100f * 3.8f })
+        // Radio 0.5..8 u (default ~3), fuerza 0.2..6 u/s (default ~2)
+        panel.addView(labeledSeek("Radio", 33) { p -> renderer.brushRadius = 0.5f + p / 100f * 7.5f })
+        panel.addView(labeledSeek("Fuerza", 31) { p -> renderer.brushStrength = 0.2f + p / 100f * 5.8f })
+
+        val undoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val undoBtn = smallButton("Deshacer").apply { setOnClickListener { renderer.undo() } }
+        val redoBtn = smallButton("Rehacer").apply { setOnClickListener { renderer.redo() } }
+        undoRow.addView(undoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        undoRow.addView(redoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        panel.addView(undoRow)
 
         selectTool(Terrain.TOOL_RAISE)
         return panel
@@ -281,12 +288,21 @@ class MainActivity : Activity() {
                     toast("Proyecto guardado")
                 }
                 reqOpenProject -> {
-                    val ok = contentResolver.openInputStream(uri)?.use { ProjectIO.loadProject(it, t) } ?: false
-                    if (ok) {
-                        renderer.requestUpdate()
-                        toast("Proyecto abierto")
+                    // Se lee a memoria aquí y se aplica en el hilo GL (con paso de deshacer)
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    if (bytes == null) {
+                        toast("No se pudo leer el archivo")
                     } else {
-                        toast("Archivo no válido (o de otra resolución)")
+                        renderer.replaceTerrain { terrain ->
+                            val ok = try {
+                                ProjectIO.loadProject(java.io.ByteArrayInputStream(bytes), terrain)
+                            } catch (e: Exception) {
+                                false
+                            }
+                            runOnUiThread {
+                                toast(if (ok) "Proyecto abierto" else "Archivo no válido (o de otra resolución)")
+                            }
+                        }
                     }
                 }
                 reqExportPng -> {
@@ -335,8 +351,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "No se pudo leer la imagen", Toast.LENGTH_SHORT).show()
             return
         }
-        renderer.terrain.loadFromBitmap(bmp)
-        renderer.requestUpdate()
+        renderer.replaceTerrain { it.loadFromBitmap(bmp) }
     }
 
     /** Decodifica con submuestreo para no reventar memoria con imágenes enormes. */

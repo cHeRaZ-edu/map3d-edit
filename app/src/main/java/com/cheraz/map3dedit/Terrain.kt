@@ -1,6 +1,7 @@
 package com.cheraz.map3dedit
 
 import android.graphics.Bitmap
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.sqrt
 
@@ -8,22 +9,28 @@ import kotlin.math.sqrt
  * Terreno como grid regular de (n x n) vértices en el plano XZ, centrado en el origen.
  * heights[z * n + x] guarda la altura (Y). Es la fuente de verdad: el heightmap.
  *
- * Todas las fuentes (ruido, PNG) producen valores 0..1, se estiran a su min/max
- * y se escalan a [-heightRange/2, +heightRange/2].
+ * Las fuentes (ruido, PNG) producen valores 0..1, se estiran a su min/max
+ * y se escalan a [-heightRange/2, +heightRange/2]. Esculpiendo se puede pasar de ese rango.
  */
-class Terrain(val n: Int = 128, val size: Float = 20f) {
+class Terrain(val n: Int = 256, val size: Float = 40f) {
 
     @Volatile var heights = FloatArray(n * n)
         private set
 
     val step = size / (n - 1)
 
-    /** Rango total de altura en unidades de mundo. */
+    /** Rango total de altura en unidades de mundo (al generar). */
     var heightRange = 6f
 
     var minH = 0f
         private set
     var maxH = 1f
+        private set
+
+    /** Filas (z) tocadas por el último trazo de pincel, para subir solo esa zona a la GPU. */
+    @Volatile var brushZ0 = 0
+        private set
+    @Volatile var brushZ1 = -1
         private set
 
     init {
@@ -32,7 +39,7 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
 
     // ---------- Fuentes de heightmap ----------
 
-    fun generateNoise(seed: Int, baseFreq: Float = 3f, octaves: Int = 6) {
+    fun generateNoise(seed: Int, baseFreq: Float = 3f, octaves: Int = 7) {
         val out = FloatArray(n * n)
         for (z in 0 until n) {
             for (x in 0 until n) {
@@ -147,6 +154,8 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
         const val TOOL_LOWER = 1
         const val TOOL_SMOOTH = 2
         const val TOOL_FLATTEN = 3
+        const val TOOL_ROUGH = 4
+        const val TOOL_TERRACE = 5
     }
 
     /**
@@ -160,13 +169,18 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
         val x1 = (((cx + radius + half) / step).toInt() + 1).coerceIn(0, n - 1)
         val z0 = ((cz - radius + half) / step).toInt().coerceIn(0, n - 1)
         val z1 = (((cz + radius + half) / step).toInt() + 1).coerceIn(0, n - 1)
+        brushZ0 = z0
+        brushZ1 = z1
         val src = if (tool == TOOL_SMOOTH) h.copyOf() else h
-        val lim = heightRange * 0.75f
+        val lim = heightRange * 1.5f
+        val terraceStep = heightRange / 8f
 
         for (z in z0..z1) {
             for (x in x0..x1) {
-                val dx = x * step - half - cx
-                val dz = z * step - half - cz
+                val wx = x * step - half
+                val wz = z * step - half
+                val dx = wx - cx
+                val dz = wz - cz
                 val dist = sqrt(dx * dx + dz * dz)
                 if (dist >= radius) continue
                 val t = 1f - dist / radius
@@ -183,42 +197,69 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
                         v += (avg - src[i]) * (strength * dt * w * 4f).coerceAtMost(1f)
                     }
                     TOOL_FLATTEN -> v += (target - v) * (strength * dt * w * 3f).coerceAtMost(1f)
+                    TOOL_ROUGH -> {
+                        // Patrón de ruido fijo: al mantener el dedo la superficie se va "rompiendo"
+                        v += (valueNoise(wx * 0.7f, wz * 0.7f, 7) - 0.5f) * strength * dt * w * 2f
+                    }
+                    TOOL_TERRACE -> {
+                        val tgt = Math.round(v / terraceStep) * terraceStep
+                        v += (tgt - v) * (strength * dt * w * 3f).coerceAtMost(1f)
+                    }
                 }
                 h[i] = v.coerceIn(-lim, lim)
             }
         }
     }
 
-    /** Rayo contra el terreno (marcha + bisección). Devuelve el punto de impacto x,y,z o null. */
-    fun raycast(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, maxDist: Float = 250f): FloatArray? {
+    /**
+     * Rayo contra el terreno. Solo marcha dentro del cuadro del mapa (recorte por slabs)
+     * y afina el impacto por bisección. Devuelve x,y,z o null.
+     */
+    fun raycast(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, maxDist: Float = 500f): FloatArray? {
         val half = size / 2f
+        var tMin = 0f
+        var tMax = maxDist
+
+        // Recorte del rayo contra el rectángulo [-half, half] en X y Z
+        if (abs(dx) < 1e-6f) {
+            if (ox < -half || ox > half) return null
+        } else {
+            var t1 = (-half - ox) / dx
+            var t2 = (half - ox) / dx
+            if (t1 > t2) { val s = t1; t1 = t2; t2 = s }
+            if (t1 > tMin) tMin = t1
+            if (t2 < tMax) tMax = t2
+        }
+        if (abs(dz) < 1e-6f) {
+            if (oz < -half || oz > half) return null
+        } else {
+            var t1 = (-half - oz) / dz
+            var t2 = (half - oz) / dz
+            if (t1 > t2) { val s = t1; t1 = t2; t2 = s }
+            if (t1 > tMin) tMin = t1
+            if (t2 < tMax) tMax = t2
+        }
+        if (tMin > tMax) return null
+
         val stepLen = step * 0.5f
-        var t = 0f
-        var prevT = 0f
+        var t = tMin
+        var prevT = tMin
         var prevAbove = false
         var havePrev = false
-        while (t < maxDist) {
-            val x = ox + dx * t
-            val y = oy + dy * t
-            val z = oz + dz * t
-            if (x >= -half && x <= half && z >= -half && z <= half) {
-                val above = y > heightAtWorld(x, z)
-                if (havePrev && prevAbove && !above) {
-                    var lo = prevT
-                    var hi = t
-                    repeat(8) {
-                        val mid = (lo + hi) / 2f
-                        val my = oy + dy * mid
-                        if (my > heightAtWorld(ox + dx * mid, oz + dz * mid)) lo = mid else hi = mid
-                    }
-                    return floatArrayOf(ox + dx * hi, oy + dy * hi, oz + dz * hi)
+        while (t <= tMax) {
+            val above = (oy + dy * t) > heightAtWorld(ox + dx * t, oz + dz * t)
+            if (havePrev && prevAbove && !above) {
+                var lo = prevT
+                var hi = t
+                repeat(8) {
+                    val mid = (lo + hi) / 2f
+                    if (oy + dy * mid > heightAtWorld(ox + dx * mid, oz + dz * mid)) lo = mid else hi = mid
                 }
-                prevAbove = above
-                prevT = t
-                havePrev = true
-            } else {
-                havePrev = false
+                return floatArrayOf(ox + dx * hi, oy + dy * hi, oz + dz * hi)
             }
+            prevAbove = above
+            prevT = t
+            havePrev = true
             t += stepLen
         }
         return null
@@ -231,9 +272,15 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
 
     /** Vértices intercalados: x, y, z, nx, ny, nz */
     fun buildVertices(out: FloatArray = FloatArray(n * n * 6)): FloatArray {
+        buildVertexRows(out, 0, n - 1)
+        return out
+    }
+
+    /** Recalcula solo las filas z0..z1 dentro de `out` (que debe tener tamaño n*n*6). */
+    fun buildVertexRows(out: FloatArray, z0: Int, z1: Int) {
         val h = heights
-        var i = 0
-        for (z in 0 until n) {
+        var i = z0 * n * 6
+        for (z in z0..z1) {
             for (x in 0 until n) {
                 val dx = heightAt(h, x + 1, z) - heightAt(h, x - 1, z)
                 val dz = heightAt(h, x, z + 1) - heightAt(h, x, z - 1)
@@ -251,7 +298,6 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
                 out[i++] = nz
             }
         }
-        return out
     }
 
     fun buildIndices(): ShortArray {
