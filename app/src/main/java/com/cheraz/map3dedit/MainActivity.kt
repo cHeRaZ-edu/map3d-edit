@@ -19,6 +19,9 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.app.AlertDialog
+import android.widget.HorizontalScrollView
+import java.io.File
 import kotlin.random.Random
 
 class MainActivity : Activity() {
@@ -44,6 +47,14 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Recupera el último terreno guardado automáticamente (si existe y es válido)
+        try {
+            val f = File(filesDir, "autosave.m3d")
+            if (f.exists()) f.inputStream().use { ProjectIO.loadProject(it, renderer.terrain) }
+        } catch (e: Exception) {
+            // archivo corrupto o de otra versión: se ignora y arranca con el terreno por defecto
+        }
 
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -126,8 +137,17 @@ class MainActivity : Activity() {
         bar.addView(walkBtn)
         bar.addView(sculptBtn)
         bar.addView(noiseBtn)
+        val fileBtn = smallButton("Archivo").apply {
+            setOnClickListener { showFileMenu() }
+        }
         bar.addView(pngBtn)
-        container.addView(bar)
+        bar.addView(fileBtn)
+        // Con 5 botones ya no cabe todo en una fila: la barra se desplaza horizontalmente
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(bar)
+        }
+        container.addView(scroll)
 
         container.layoutParams = FrameLayout.LayoutParams(matchParent, wrapContent, Gravity.BOTTOM)
         return container
@@ -206,11 +226,108 @@ class MainActivity : Activity() {
         sculptBtn.text = if (on) "Esculpir ●" else "Esculpir"
     }
 
+    // ---------- Archivo: guardar / exportar ----------
+
+    private val reqSaveProject = 2001
+    private val reqExportPng = 2002
+    private val reqExportRaw = 2003
+    private val reqExportObj = 2004
+    private val reqOpenProject = 2005
+
+    private fun showFileMenu() {
+        val items = arrayOf(
+            "Guardar proyecto (.m3d)",
+            "Abrir proyecto (.m3d)",
+            "Exportar PNG 16 bits",
+            "Exportar RAW 16 bits",
+            "Exportar malla OBJ"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Archivo")
+            .setItems(items) { _, which ->
+                val n = renderer.terrain.n
+                when (which) {
+                    0 -> createDocument(reqSaveProject, "application/octet-stream", "terreno.m3d")
+                    1 -> {
+                        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                        }
+                        startActivityForResult(i, reqOpenProject)
+                    }
+                    2 -> createDocument(reqExportPng, "image/png", "terreno_${n}x${n}_16bit.png")
+                    3 -> createDocument(reqExportRaw, "application/octet-stream", "terreno_${n}x${n}_16bit.raw")
+                    4 -> createDocument(reqExportObj, "application/octet-stream", "terreno.obj")
+                }
+            }
+            .show()
+    }
+
+    private fun createDocument(code: Int, mime: String, name: String) {
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime
+            putExtra(Intent.EXTRA_TITLE, name)
+        }
+        startActivityForResult(i, code)
+    }
+
+    private fun handleFileResult(code: Int, uri: Uri) {
+        val t = renderer.terrain
+        try {
+            when (code) {
+                reqSaveProject -> {
+                    contentResolver.openOutputStream(uri)?.use { ProjectIO.saveProject(it, t) }
+                    toast("Proyecto guardado")
+                }
+                reqOpenProject -> {
+                    val ok = contentResolver.openInputStream(uri)?.use { ProjectIO.loadProject(it, t) } ?: false
+                    if (ok) {
+                        renderer.requestUpdate()
+                        toast("Proyecto abierto")
+                    } else {
+                        toast("Archivo no válido (o de otra resolución)")
+                    }
+                }
+                reqExportPng -> {
+                    val q = contentResolver.openOutputStream(uri)?.use { ProjectIO.writePng16(it, t) }
+                    if (q != null) toast(heightInfo(q))
+                }
+                reqExportRaw -> {
+                    val q = contentResolver.openOutputStream(uri)?.use { ProjectIO.writeRaw16(it, t) }
+                    if (q != null) toast(heightInfo(q))
+                }
+                reqExportObj -> {
+                    contentResolver.openOutputStream(uri)?.use { ProjectIO.writeObj(it, t) }
+                    toast("OBJ exportado")
+                }
+            }
+        } catch (e: Exception) {
+            toast("Error: ${e.message}")
+        }
+    }
+
+    /** Para reconstruir la escala real al reimportar el PNG/RAW en otro motor. */
+    private fun heightInfo(q: ProjectIO.Quantized): String {
+        val t = renderer.terrain
+        return String.format(
+            java.util.Locale.US,
+            "Exportado. 0 = %.2f u, 65535 = %.2f u (rango %.2f), terreno %.0f x %.0f u",
+            q.lo, q.hi, q.hi - q.lo, t.size, t.size
+        )
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
     // ---------- PNG ----------
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode == RESULT_OK && requestCode in reqSaveProject..reqOpenProject) {
+            data?.data?.let { handleFileResult(requestCode, it) }
+            return
+        }
         if (requestCode != pickImageCode || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val bmp = decodeBitmap(uri)
@@ -328,6 +445,12 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        // Autoguardado: lo que esculpes sobrevive al cerrar la app
+        try {
+            File(filesDir, "autosave.m3d").outputStream().use { ProjectIO.saveProject(it, renderer.terrain) }
+        } catch (e: Exception) {
+            // sin espacio o sin permisos: no es crítico
+        }
         glView.onPause()
     }
 

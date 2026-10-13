@@ -70,6 +70,15 @@ class Terrain(val n: Int = 128, val size: Float = 20f) {
         applyNormalized(out)
     }
 
+    /** Reemplaza el heightmap tal cual (alturas ya en unidades de mundo), sin normalizar. */
+    fun setHeightsRaw(values: FloatArray, range: Float) {
+        require(values.size == n * n)
+        heightRange = range
+        minH = -range / 2f
+        maxH = range / 2f
+        heights = values
+    }
+
     private fun applyNormalized(values: FloatArray) {
         var lo = Float.MAX_VALUE
         var hi = -Float.MAX_VALUE
