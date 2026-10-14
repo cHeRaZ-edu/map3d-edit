@@ -199,6 +199,136 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         }
     """.trimIndent()
 
+    // ---------- Personaje-cámara (primitivas de cajas) ----------
+    // Es la cámara de caminar hecha cuerpo: en la vista orbital se ve dónde está y hacia dónde mira,
+    // con una baliza alta y una flecha para localizarlo desde lejos.
+
+    private val solidVertexShader = """
+        #version 300 es
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec3 aNormal;
+        uniform mat4 uMvp;
+        uniform mat4 uRot;
+        out vec3 vN;
+        void main() {
+            vN = mat3(uRot) * aNormal;
+            gl_Position = uMvp * vec4(aPos, 1.0);
+        }
+    """.trimIndent()
+
+    private val solidFragmentShader = """
+        #version 300 es
+        precision mediump float;
+        in vec3 vN;
+        uniform vec3 uColor;
+        uniform vec3 uLight;
+        out vec4 outColor;
+        void main() {
+            float d = max(dot(normalize(vN), normalize(uLight)), 0.0);
+            outColor = vec4(uColor * (0.35 + 0.65 * d), 1.0);
+        }
+    """.trimIndent()
+
+    private var solidProgram = 0
+    private var solidMvp = 0
+    private var solidRot = 0
+    private var solidColor = 0
+    private var solidLight = 0
+
+    private val cubeData = buildCube()
+    private val cubeBuf = ByteBuffer.allocateDirect(cubeData.size * 4)
+        .order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
+            put(cubeData)
+            position(0)
+        }
+    private val partM = FloatArray(16)
+    private val partMvp = FloatArray(16)
+    private val rotM = FloatArray(16)
+
+    /** Cubo unitario centrado: 36 vértices (pos + normal), sin índices. */
+    private fun buildCube(): FloatArray {
+        // Cada cara: normal (3) + 4 esquinas (12)
+        val faces = arrayOf(
+            floatArrayOf(1f, 0f, 0f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f),
+            floatArrayOf(-1f, 0f, 0f, -0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f, -0.5f, -0.5f, -0.5f, -0.5f),
+            floatArrayOf(0f, 1f, 0f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, -0.5f),
+            floatArrayOf(0f, -1f, 0f, -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, -0.5f, 0.5f),
+            floatArrayOf(0f, 0f, 1f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f),
+            floatArrayOf(0f, 0f, -1f, 0.5f, -0.5f, -0.5f, -0.5f, -0.5f, -0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f)
+        )
+        val order = intArrayOf(0, 1, 2, 0, 2, 3)
+        val out = FloatArray(36 * 6)
+        var o = 0
+        for (f in faces) {
+            for (k in order) {
+                out[o++] = f[3 + k * 3]
+                out[o++] = f[4 + k * 3]
+                out[o++] = f[5 + k * 3]
+                out[o++] = f[0]
+                out[o++] = f[1]
+                out[o++] = f[2]
+            }
+        }
+        return out
+    }
+
+    private fun drawAvatar() {
+        val gx = px
+        val gz = pz
+        val gy = terrain.heightAtWorld(gx, gz)
+
+        GLES30.glUseProgram(solidProgram)
+        GLES30.glUniform3f(solidLight, 0.5f, 1.0f, 0.3f)
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+        GLES30.glEnableVertexAttribArray(0)
+        GLES30.glEnableVertexAttribArray(1)
+        cubeBuf.position(0)
+        GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 24, cubeBuf)
+        cubeBuf.position(3)
+        GLES30.glVertexAttribPointer(1, 3, GLES30.GL_FLOAT, false, 24, cubeBuf)
+        cubeBuf.position(0)
+
+        Matrix.setIdentityM(rotM, 0)
+        Matrix.rotateM(rotM, 0, -yawW, 0f, 1f, 0f)
+        GLES30.glUniformMatrix4fv(solidRot, 1, false, rotM, 0)
+
+        // cuerpo, cabeza, visor (frente), baliza alta y flecha en la punta que indica hacia dónde mira
+        drawPart(gx, gy, gz, 0f, 0.35f, 0f, 0.5f, 0.7f, 0.5f, 1f, 0.55f, 0.1f)
+        drawPart(gx, gy, gz, 0f, 0.95f, 0f, 0.4f, 0.4f, 0.4f, 1f, 0.85f, 0.3f)
+        drawPart(gx, gy, gz, 0f, 0.95f, -0.28f, 0.24f, 0.16f, 0.3f, 0.9f, 0.1f, 0.1f)
+        drawPart(gx, gy, gz, 0f, 4.2f, 0f, 0.12f, 6f, 0.12f, 1f, 0.2f, 0.8f)
+        drawPart(gx, gy, gz, 0f, 7f, -0.7f, 0.12f, 0.12f, 1.4f, 0.9f, 0.1f, 0.1f)
+    }
+
+    private fun drawPart(
+        ax: Float, ay: Float, az: Float,
+        lx: Float, ly: Float, lz: Float,
+        sx: Float, sy: Float, sz: Float,
+        r: Float, g: Float, b: Float
+    ) {
+        Matrix.setIdentityM(partM, 0)
+        Matrix.translateM(partM, 0, ax, ay, az)
+        Matrix.rotateM(partM, 0, -yawW, 0f, 1f, 0f)
+        Matrix.translateM(partM, 0, lx, ly, lz)
+        Matrix.scaleM(partM, 0, sx, sy, sz)
+        Matrix.multiplyMM(partMvp, 0, mvp, 0, partM, 0)
+        GLES30.glUniformMatrix4fv(solidMvp, 1, false, partMvp, 0)
+        GLES30.glUniform3f(solidColor, r, g, b)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 36)
+    }
+
+    /** Lleva el personaje al punto del cursor (o la mira) y lo orienta como la vista actual. */
+    fun placeAvatarAtCursor() = runOnGl {
+        if (haveCursor) {
+            px = cursorX
+            pz = cursorZ
+            if (!walkMode) {
+                yawW = -yaw
+                pitchW = -10f
+            }
+        }
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0.53f, 0.74f, 0.92f, 1f)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
@@ -212,6 +342,12 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         ringProgram = buildProgram(ringVertexShader, ringFragmentShader)
         ringMvp = GLES30.glGetUniformLocation(ringProgram, "uMvp")
         ringColor = GLES30.glGetUniformLocation(ringProgram, "uColor")
+
+        solidProgram = buildProgram(solidVertexShader, solidFragmentShader)
+        solidMvp = GLES30.glGetUniformLocation(solidProgram, "uMvp")
+        solidRot = GLES30.glGetUniformLocation(solidProgram, "uRot")
+        solidColor = GLES30.glGetUniformLocation(solidProgram, "uColor")
+        solidLight = GLES30.glGetUniformLocation(solidProgram, "uLight")
 
         val indices = terrain.buildIndices()
         indexCount = indices.size
@@ -325,6 +461,9 @@ class TerrainRenderer : GLSurfaceView.Renderer {
     @Volatile var tool = Terrain.TOOL_RAISE
     @Volatile var brushRadius = 3f
     @Volatile var brushStrength = 2f
+    /** Arma editora: en modo caminar, mientras está activa esculpe donde apunta la mira. */
+    @Volatile var fireActive = false
+    private var haveCursor = false
 
     private var viewW = 1
     private var viewH = 1
@@ -346,17 +485,26 @@ class TerrainRenderer : GLSurfaceView.Renderer {
 
     private fun sculptStep() {
         cursorValid = false
-        if (!sculptEnabled || walkMode) {
+        val walking = walkMode
+        if (!walking && !sculptEnabled) {
             endStroke()
             return
         }
-        val touching = sculptActive
-        if (touching) {
-            lastSx = sculptX
-            lastSy = sculptY
-        } else if (lastSx < 0f) {
+        val touching: Boolean
+        if (walking) {
+            // Caminando se esculpe con la mira (centro de pantalla) y el botón de disparo
+            touching = fireActive
             lastSx = viewW / 2f
             lastSy = viewH / 2f
+        } else {
+            touching = sculptActive
+            if (touching) {
+                lastSx = sculptX
+                lastSy = sculptY
+            } else if (lastSx < 0f) {
+                lastSx = viewW / 2f
+                lastSy = viewH / 2f
+            }
         }
 
         val ray = screenRay(lastSx, lastSy)
@@ -365,6 +513,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
             cursorX = hit[0]
             cursorZ = hit[2]
             cursorValid = true
+            haveCursor = true
         }
 
         if (!touching) {
@@ -413,7 +562,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
 
     /** Anillo que sigue el relieve: borde = radio del pincel, interior = mitad (zona fuerte). */
     private fun drawCursor() {
-        if (!sculptEnabled || walkMode || !cursorValid) return
+        if (!(sculptEnabled || walkMode) || !cursorValid) return
 
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glUseProgram(ringProgram)
@@ -476,6 +625,8 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo)
         GLES30.glDrawElements(GLES30.GL_TRIANGLES, indexCount, GLES30.GL_UNSIGNED_SHORT, 0)
 
+        // En primera persona la cámara está dentro del personaje, así que no se dibuja
+        if (!walkMode) drawAvatar()
         drawCursor()
     }
 

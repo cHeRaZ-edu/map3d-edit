@@ -112,7 +112,20 @@ class JoystickOverlay(
         invalidate()
     }
 
+    private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * resources.displayMetrics.density
+        color = Color.WHITE
+    }
+
     override fun onDraw(canvas: Canvas) {
+        // Mira del arma editora
+        val cx = width / 2f
+        val cy = height / 2f
+        val arm = 10f * resources.displayMetrics.density
+        canvas.drawLine(cx - arm, cy, cx + arm, cy, crossPaint)
+        canvas.drawLine(cx, cy - arm, cx, cy + arm, crossPaint)
+
         for (s in listOf(left, right)) {
             if (!s.active) continue
             canvas.drawCircle(s.cx, s.cy, radius, basePaint)

@@ -27,3 +27,15 @@ El botón **Archivo** guarda/abre el proyecto (`.m3d`, alturas exactas) y export
 - **OBJ** con vértices, normales y caras (Y arriba, unidades de mundo).
 
 Además hay autoguardado: al salir de la app se guarda el terreno y se recupera al abrirla.
+
+## Personaje-cámara y arma editora
+
+La cámara de **Caminar** es un personaje de cajas (cuerpo, cabeza, visor) con una baliza magenta alta
+y una flecha en la punta que indica hacia dónde mira. En la vista orbital siempre se ve dónde quedó.
+
+- **Caminar:** joystick izquierdo mueve, derecho mira. Aparece una mira en el centro y el botón
+  **ESCULPIR** (arma editora): mantenlo presionado para esculpir donde apunta la mira. Arrastrar el
+  dedo sobre ese botón también gira la vista, para disparar y apuntar con el mismo pulgar.
+- Las herramientas, radio, fuerza y deshacer funcionan igual que en la vista orbital
+  (el botón **Panel** oculta o muestra ese panel).
+- **Cámara aquí:** lleva el personaje al cursor del pincel y lo orienta como la vista actual.

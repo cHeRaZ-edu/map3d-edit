@@ -39,7 +39,16 @@ class MainActivity : Activity() {
     private lateinit var sculptPanel: LinearLayout
     private lateinit var walkBtn: Button
     private lateinit var sculptBtn: Button
+    private lateinit var fireBtn: Button
     private val toolButtons = mutableListOf<Button>()
+
+    private var panelOpen = true
+
+    // La mirada puede venir del joystick derecho o de arrastrar sobre el botón de disparo
+    private var lookOvX = 0f
+    private var lookOvY = 0f
+    private var lookFireX = 0f
+    private var lookFireY = 0f
 
     private val pickImageCode = 1001
     private val matchParent = ViewGroup.LayoutParams.MATCH_PARENT
@@ -81,9 +90,12 @@ class MainActivity : Activity() {
         joystickOverlay = JoystickOverlay(
             this,
             onMove = { x, y -> renderer.moveX = x; renderer.moveY = y },
-            onLook = { x, y -> renderer.lookX = x; renderer.lookY = y }
+            onLook = { x, y -> lookOvX = x; lookOvY = y; applyLook() }
         ).apply { visibility = View.GONE }
         root.addView(joystickOverlay)
+
+        fireBtn = buildFireButton()
+        root.addView(fireBtn)
 
         // La barra va al final para quedar encima de los joysticks y recibir sus toques
         root.addView(buildToolbar())
@@ -140,8 +152,15 @@ class MainActivity : Activity() {
         val fileBtn = smallButton("Archivo").apply {
             setOnClickListener { showFileMenu() }
         }
+        val panelBtn = smallButton("Panel").apply {
+            setOnClickListener {
+                panelOpen = !panelOpen
+                updateUi()
+            }
+        }
         bar.addView(pngBtn)
         bar.addView(fileBtn)
+        bar.addView(panelBtn)
         // Con 5 botones ya no cabe todo en una fila: la barra se desplaza horizontalmente
         val scroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -178,7 +197,9 @@ class MainActivity : Activity() {
         val undoBtn = smallButton("Deshacer").apply { setOnClickListener { renderer.undo() } }
         val redoBtn = smallButton("Rehacer").apply { setOnClickListener { renderer.redo() } }
         undoRow.addView(undoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        val hereBtn = smallButton("Cámara aquí").apply { setOnClickListener { renderer.placeAvatarAtCursor() } }
         undoRow.addView(redoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        undoRow.addView(hereBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
         panel.addView(undoRow)
 
         selectTool(Terrain.TOOL_RAISE)
@@ -216,21 +237,79 @@ class MainActivity : Activity() {
     private fun setWalk(walk: Boolean) {
         if (walk && renderer.sculptEnabled) setSculpt(false)
         renderer.walkMode = walk
-        if (walk) {
-            joystickOverlay.visibility = View.VISIBLE
-        } else {
-            joystickOverlay.visibility = View.GONE
+        if (!walk) {
+            renderer.fireActive = false
+            lookFireX = 0f
+            lookFireY = 0f
             joystickOverlay.reset()
+            applyLook()
         }
         walkBtn.text = if (walk) "Orbitar" else "Caminar"
+        updateUi()
     }
 
     private fun setSculpt(on: Boolean) {
         if (on && renderer.walkMode) setWalk(false)
         renderer.sculptEnabled = on
         if (!on) renderer.sculptActive = false
-        sculptPanel.visibility = if (on) View.VISIBLE else View.GONE
         sculptBtn.text = if (on) "Esculpir ●" else "Esculpir"
+        updateUi()
+    }
+
+    /** Caminando: joysticks, botón de disparo y panel de herramientas. */
+    private fun updateUi() {
+        val walking = renderer.walkMode
+        joystickOverlay.visibility = if (walking) View.VISIBLE else View.GONE
+        fireBtn.visibility = if (walking) View.VISIBLE else View.GONE
+        val panelWanted = (renderer.sculptEnabled || walking) && panelOpen
+        sculptPanel.visibility = if (panelWanted) View.VISIBLE else View.GONE
+    }
+
+    private fun applyLook() {
+        renderer.lookX = (lookOvX + lookFireX).coerceIn(-1f, 1f)
+        renderer.lookY = (lookOvY + lookFireY).coerceIn(-1f, 1f)
+    }
+
+    /**
+     * Arma editora: mientras se mantiene presionado esculpe donde apunta la mira,
+     * y arrastrar el dedo sin soltarlo gira la vista (así disparas y apuntas con el mismo pulgar).
+     */
+    private fun buildFireButton(): Button {
+        val radius = dp(60).toFloat()
+        val b = Button(this).apply {
+            text = "ESCULPIR"
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.argb(200, 220, 90, 20))
+            visibility = View.GONE
+        }
+        var downX = 0f
+        var downY = 0f
+        b.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.x
+                    downY = e.y
+                    renderer.fireActive = true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    lookFireX = ((e.x - downX) / radius).coerceIn(-1f, 1f)
+                    lookFireY = (-(e.y - downY) / radius).coerceIn(-1f, 1f)
+                    applyLook()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    renderer.fireActive = false
+                    lookFireX = 0f
+                    lookFireY = 0f
+                    applyLook()
+                }
+            }
+            true
+        }
+        b.layoutParams = FrameLayout.LayoutParams(dp(110), dp(110), Gravity.END or Gravity.CENTER_VERTICAL).apply {
+            rightMargin = dp(24)
+        }
+        return b
     }
 
     // ---------- Archivo: guardar / exportar ----------
