@@ -1,10 +1,13 @@
 package com.cheraz.map3dedit
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Bundle
@@ -19,11 +22,16 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import android.app.AlertDialog
-import android.widget.HorizontalScrollView
 import java.io.File
 import kotlin.random.Random
 
+/**
+ * HUD organizado por categorías (pestañas inferiores):
+ *  - Terreno: generar / cargar / guardar y exportar.
+ *  - Editar:  tipo de edición activa (Ninguna o Esculpir) y sus ajustes.
+ *  - Mover:   tipo de movimiento / transformación (Orbitar o Caminar) y el personaje-cámara.
+ * Editar y Mover son independientes: se puede esculpir orbitando o caminando.
+ */
 class MainActivity : Activity() {
 
     private lateinit var glView: GLSurfaceView
@@ -36,13 +44,20 @@ class MainActivity : Activity() {
 
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var joystickOverlay: JoystickOverlay
-    private lateinit var sculptPanel: LinearLayout
-    private lateinit var walkBtn: Button
-    private lateinit var sculptBtn: Button
     private lateinit var fireBtn: Button
-    private val toolButtons = mutableListOf<Button>()
+    private lateinit var hud: LinearLayout
+    private lateinit var panelHost: FrameLayout
 
-    private var panelOpen = true
+    private val tabBtns = mutableListOf<Button>()
+    private val tabPanels = mutableListOf<View>()
+    private var openTab = -1
+
+    private lateinit var editNoneBtn: Button
+    private lateinit var editSculptBtn: Button
+    private lateinit var moveOrbitBtn: Button
+    private lateinit var moveWalkBtn: Button
+    private lateinit var brushGroup: LinearLayout
+    private val toolBtns = mutableListOf<Button>()
 
     // La mirada puede venir del joystick derecho o de arrastrar sobre el botón de disparo
     private var lookOvX = 0f
@@ -53,6 +68,9 @@ class MainActivity : Activity() {
     private val pickImageCode = 1001
     private val matchParent = ViewGroup.LayoutParams.MATCH_PARENT
     private val wrapContent = ViewGroup.LayoutParams.WRAP_CONTENT
+
+    private val accent = Color.rgb(230, 110, 30)
+    private val darkBtn = Color.argb(225, 52, 56, 60)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,113 +115,188 @@ class MainActivity : Activity() {
         fireBtn = buildFireButton()
         root.addView(fireBtn)
 
-        // La barra va al final para quedar encima de los joysticks y recibir sus toques
-        root.addView(buildToolbar())
+        root.addView(buildHud())
+        root.addView(buildUndoBar())
+
         setContentView(root)
+        applyHudSizing()
+        updateUi()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyHudSizing()
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    // ---------- UI ----------
+    // ---------- Estilo ----------
 
-    private fun smallButton(label: String): Button = Button(this).apply {
+    private fun styleBtn(b: Button, selected: Boolean) {
+        b.background = GradientDrawable().apply {
+            cornerRadius = dp(8).toFloat()
+            setColor(if (selected) accent else darkBtn)
+        }
+    }
+
+    private fun hudButton(label: String, textSp: Float = 12f, onClick: () -> Unit): Button = Button(this).apply {
         text = label
-        textSize = 11f
+        textSize = textSp
+        setAllCaps(false)
+        setTextColor(Color.WHITE)
+        minHeight = 0
+        minimumHeight = 0
         minWidth = 0
         minimumWidth = 0
-        setPadding(dp(10), 0, dp(10), 0)
+        setPadding(dp(6), 0, dp(6), 0)
+        stateListAnimator = null // sin sombra de elevación
+        styleBtn(this, false)
+        setOnClickListener { onClick() }
     }
 
-    private fun buildToolbar(): LinearLayout {
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(56))
-        }
-
-        sculptPanel = buildSculptPanel()
-        container.addView(sculptPanel, LinearLayout.LayoutParams(matchParent, wrapContent))
-
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-
-        walkBtn = smallButton("Caminar").apply {
-            setOnClickListener { setWalk(!renderer.walkMode) }
-        }
-        sculptBtn = smallButton("Esculpir").apply {
-            setOnClickListener { setSculpt(!renderer.sculptEnabled) }
-        }
-        val noiseBtn = smallButton("Ruido nuevo").apply {
-            setOnClickListener {
-                val seed = Random.nextInt(1, 100000)
-                renderer.replaceTerrain { it.generateNoise(seed = seed) }
-            }
-        }
-        val pngBtn = smallButton("Cargar PNG").apply {
-            setOnClickListener {
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "image/*"
-                }
-                startActivityForResult(intent, pickImageCode)
-            }
-        }
-        bar.addView(walkBtn)
-        bar.addView(sculptBtn)
-        bar.addView(noiseBtn)
-        val fileBtn = smallButton("Archivo").apply {
-            setOnClickListener { showFileMenu() }
-        }
-        val panelBtn = smallButton("Panel").apply {
-            setOnClickListener {
-                panelOpen = !panelOpen
-                updateUi()
-            }
-        }
-        bar.addView(pngBtn)
-        bar.addView(fileBtn)
-        bar.addView(panelBtn)
-        // Con 5 botones ya no cabe todo en una fila: la barra se desplaza horizontalmente
-        val scroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(bar)
-        }
-        container.addView(scroll)
-
-        container.layoutParams = FrameLayout.LayoutParams(matchParent, wrapContent, Gravity.BOTTOM)
-        return container
+    private fun sectionTitle(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 11f
+        setTextColor(Color.argb(200, 255, 255, 255))
+        setPadding(dp(2), 0, 0, dp(4))
     }
 
-    private fun buildSculptPanel(): LinearLayout {
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(130, 0, 0, 0))
-            setPadding(dp(8), dp(6), dp(8), dp(6))
+    /** Fila horizontal con los botones repartidos en partes iguales. */
+    private fun row(vararg views: View): LinearLayout {
+        val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (v in views) {
+            r.addView(v, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                setMargins(dp(2), dp(2), dp(2), dp(2))
+            })
+        }
+        return r
+    }
+
+    // ---------- HUD ----------
+
+    private fun buildHud(): LinearLayout {
+        hud = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        panelHost = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.argb(150, 0, 0, 0))
+            }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
             isClickable = true // que los toques sobre el panel no lleguen al terreno
             visibility = View.GONE
         }
+        tabPanels.add(buildTerrainPanel())
+        tabPanels.add(buildEditPanel())
+        tabPanels.add(buildMovePanel())
+        for (p in tabPanels) panelHost.addView(p, FrameLayout.LayoutParams(matchParent, wrapContent))
+        hud.addView(panelHost, LinearLayout.LayoutParams(matchParent, wrapContent).apply {
+            bottomMargin = dp(6)
+        })
 
-        val toolRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("Subir", "Bajar", "Suavizar", "Aplanar", "Rugoso", "Terraza").forEachIndexed { idx, name ->
-            val b = smallButton(name).apply { setOnClickListener { selectTool(idx) } }
-            toolButtons.add(b)
-            toolRow.addView(b, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (i in 0..2) {
+            val b = hudButton("", 12f) { toggleTab(i) }
+            tabBtns.add(b)
+            tabBar.addView(b, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+                setMargins(dp(2), 0, dp(2), 0)
+            })
         }
-        panel.addView(toolRow)
+        hud.addView(tabBar, LinearLayout.LayoutParams(matchParent, wrapContent))
+        return hud
+    }
+
+    /** Ancho cómodo: toda la pantalla en vertical, un bloque a la izquierda en horizontal. */
+    private fun applyHudSizing() {
+        val widthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
+        val w = if (widthDp > 480f) dp(440) else matchParent
+        hud.layoutParams = FrameLayout.LayoutParams(w, wrapContent, Gravity.BOTTOM or Gravity.START).apply {
+            setMargins(dp(8), dp(8), dp(8), dp(8))
+        }
+        hud.requestLayout()
+    }
+
+    private fun toggleTab(i: Int) {
+        openTab = if (openTab == i) -1 else i
+        updateUi()
+    }
+
+    private fun buildTerrainPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p.addView(sectionTitle("TERRENO"))
+        p.addView(
+            row(
+                hudButton("Ruido nuevo") {
+                    val seed = Random.nextInt(1, 100000)
+                    renderer.replaceTerrain { it.generateNoise(seed = seed) }
+                },
+                hudButton("Cargar PNG") { pickPng() },
+                hudButton("Archivo…") { showFileMenu() }
+            )
+        )
+        return p
+    }
+
+    private fun buildEditPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p.addView(sectionTitle("EDITAR"))
+
+        editNoneBtn = hudButton("Ninguna") { setEdit(false) }
+        editSculptBtn = hudButton("Esculpir") { setEdit(true) }
+        p.addView(row(editNoneBtn, editSculptBtn))
+
+        // Ajustes del pincel: solo visibles mientras Esculpir está activo
+        brushGroup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brushGroup.addView(sectionTitle("PINCEL").apply { setPadding(dp(2), dp(6), 0, dp(4)) })
+
+        val names = listOf("Subir", "Bajar", "Suavizar", "Aplanar", "Rugoso", "Terraza")
+        for (r in 0..1) {
+            val buttons = (0..2).map { c ->
+                val idx = r * 3 + c
+                val b = hudButton(names[idx]) { selectTool(idx) }
+                toolBtns.add(b)
+                b
+            }
+            brushGroup.addView(row(*buttons.toTypedArray()))
+        }
 
         // Radio 0.5..8 u (default ~3), fuerza 0.2..6 u/s (default ~2)
-        panel.addView(labeledSeek("Radio", 33) { p -> renderer.brushRadius = 0.5f + p / 100f * 7.5f })
-        panel.addView(labeledSeek("Fuerza", 31) { p -> renderer.brushStrength = 0.2f + p / 100f * 5.8f })
-
-        val undoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val undoBtn = smallButton("Deshacer").apply { setOnClickListener { renderer.undo() } }
-        val redoBtn = smallButton("Rehacer").apply { setOnClickListener { renderer.redo() } }
-        undoRow.addView(undoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
-        val hereBtn = smallButton("Cámara aquí").apply { setOnClickListener { renderer.placeAvatarAtCursor() } }
-        undoRow.addView(redoBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
-        undoRow.addView(hereBtn, LinearLayout.LayoutParams(0, wrapContent, 1f))
-        panel.addView(undoRow)
+        brushGroup.addView(labeledSeek("Radio", 33) { v -> renderer.brushRadius = 0.5f + v / 100f * 7.5f })
+        brushGroup.addView(labeledSeek("Fuerza", 31) { v -> renderer.brushStrength = 0.2f + v / 100f * 5.8f })
+        p.addView(brushGroup)
 
         selectTool(Terrain.TOOL_RAISE)
-        return panel
+        return p
+    }
+
+    private fun buildMovePanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p.addView(sectionTitle("MOVER"))
+
+        moveOrbitBtn = hudButton("Orbitar") { setWalk(false) }
+        moveWalkBtn = hudButton("Caminar") { setWalk(true) }
+        p.addView(row(moveOrbitBtn, moveWalkBtn))
+        p.addView(row(hudButton("Personaje aquí") { renderer.placeAvatarAtCursor() }))
+
+        p.addView(TextView(this).apply {
+            text = "El personaje de cajas es la cámara de Caminar; la baliza lo marca desde lejos."
+            textSize = 10f
+            setTextColor(Color.argb(170, 255, 255, 255))
+            setPadding(dp(2), dp(4), dp(2), 0)
+        })
+        return p
+    }
+
+    private fun buildUndoBar(): LinearLayout {
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(hudButton("Deshacer", 11f) { renderer.undo() }, LinearLayout.LayoutParams(dp(84), dp(34)).apply {
+            rightMargin = dp(4)
+        })
+        bar.addView(hudButton("Rehacer", 11f) { renderer.redo() }, LinearLayout.LayoutParams(dp(84), dp(34)))
+        bar.layoutParams = FrameLayout.LayoutParams(wrapContent, wrapContent, Gravity.TOP or Gravity.END).apply {
+            setMargins(0, dp(8), dp(8), 0)
+        }
+        return bar
     }
 
     private fun labeledSeek(label: String, initial: Int, onChange: (Int) -> Unit): LinearLayout {
@@ -213,6 +306,7 @@ class MainActivity : Activity() {
         }
         val title = TextView(this).apply {
             text = label
+            textSize = 12f
             setTextColor(Color.WHITE)
         }
         val slider = SeekBar(this).apply {
@@ -224,18 +318,28 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(s: SeekBar?) {}
             })
         }
-        row.addView(title, LinearLayout.LayoutParams(dp(64), wrapContent))
-        row.addView(slider, LinearLayout.LayoutParams(0, wrapContent, 1f))
+        row.addView(title, LinearLayout.LayoutParams(dp(52), wrapContent).apply { leftMargin = dp(2) })
+        row.addView(slider, LinearLayout.LayoutParams(0, dp(34), 1f))
         return row
     }
 
     private fun selectTool(idx: Int) {
         renderer.tool = idx
-        toolButtons.forEachIndexed { i, b -> b.alpha = if (i == idx) 1f else 0.5f }
+        toolBtns.forEachIndexed { i, b -> styleBtn(b, i == idx) }
+    }
+
+    // ---------- Modos ----------
+
+    private fun setEdit(sculpt: Boolean) {
+        renderer.sculptEnabled = sculpt
+        if (!sculpt) {
+            renderer.sculptActive = false
+            renderer.fireActive = false
+        }
+        updateUi()
     }
 
     private fun setWalk(walk: Boolean) {
-        if (walk && renderer.sculptEnabled) setSculpt(false)
         renderer.walkMode = walk
         if (!walk) {
             renderer.fireActive = false
@@ -244,25 +348,32 @@ class MainActivity : Activity() {
             joystickOverlay.reset()
             applyLook()
         }
-        walkBtn.text = if (walk) "Orbitar" else "Caminar"
         updateUi()
     }
 
-    private fun setSculpt(on: Boolean) {
-        if (on && renderer.walkMode) setWalk(false)
-        renderer.sculptEnabled = on
-        if (!on) renderer.sculptActive = false
-        sculptBtn.text = if (on) "Esculpir ●" else "Esculpir"
-        updateUi()
-    }
-
-    /** Caminando: joysticks, botón de disparo y panel de herramientas. */
+    /** Refleja el estado (modo de movimiento, edición activa, pestaña abierta) en todo el HUD. */
     private fun updateUi() {
         val walking = renderer.walkMode
+        val sculpting = renderer.sculptEnabled
+
         joystickOverlay.visibility = if (walking) View.VISIBLE else View.GONE
-        fireBtn.visibility = if (walking) View.VISIBLE else View.GONE
-        val panelWanted = (renderer.sculptEnabled || walking) && panelOpen
-        sculptPanel.visibility = if (panelWanted) View.VISIBLE else View.GONE
+        // El arma editora solo aparece cuando se camina con una edición activa
+        fireBtn.visibility = if (walking && sculpting) View.VISIBLE else View.GONE
+
+        panelHost.visibility = if (openTab >= 0) View.VISIBLE else View.GONE
+        tabPanels.forEachIndexed { i, p -> p.visibility = if (i == openTab) View.VISIBLE else View.GONE }
+        brushGroup.visibility = if (sculpting) View.VISIBLE else View.GONE
+
+        // Las pestañas muestran el modo activo sin necesidad de abrirlas
+        tabBtns[0].text = "Terreno"
+        tabBtns[1].text = if (sculpting) "Editar · Esculpir" else "Editar"
+        tabBtns[2].text = if (walking) "Mover · Caminar" else "Mover · Orbitar"
+        tabBtns.forEachIndexed { i, b -> styleBtn(b, i == openTab) }
+
+        styleBtn(editNoneBtn, !sculpting)
+        styleBtn(editSculptBtn, sculpting)
+        styleBtn(moveOrbitBtn, !walking)
+        styleBtn(moveWalkBtn, walking)
     }
 
     private fun applyLook() {
@@ -276,11 +387,22 @@ class MainActivity : Activity() {
      */
     private fun buildFireButton(): Button {
         val radius = dp(60).toFloat()
+        val size = dp(84)
         val b = Button(this).apply {
             text = "ESCULPIR"
-            textSize = 12f
+            textSize = 10f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(200, 220, 90, 20))
+            setPadding(0, 0, 0, 0)
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            stateListAnimator = null
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(210, 230, 110, 30))
+                setStroke(dp(2), Color.argb(230, 255, 255, 255))
+            }
             visibility = View.GONE
         }
         var downX = 0f
@@ -306,8 +428,8 @@ class MainActivity : Activity() {
             }
             true
         }
-        b.layoutParams = FrameLayout.LayoutParams(dp(110), dp(110), Gravity.END or Gravity.CENTER_VERTICAL).apply {
-            rightMargin = dp(24)
+        b.layoutParams = FrameLayout.LayoutParams(size, size, Gravity.END or Gravity.CENTER_VERTICAL).apply {
+            rightMargin = dp(20)
         }
         return b
     }
@@ -319,6 +441,14 @@ class MainActivity : Activity() {
     private val reqExportRaw = 2003
     private val reqExportObj = 2004
     private val reqOpenProject = 2005
+
+    private fun pickPng() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        startActivityForResult(intent, pickImageCode)
+    }
 
     private fun showFileMenu() {
         val items = arrayOf(
@@ -492,7 +622,7 @@ class MainActivity : Activity() {
         return if (c == 0) Pair(0f, 0f) else Pair(sx / c, sy / c)
     }
 
-    // Esculpir: un dedo pinta; dos dedos orbitan (centroide) y pinch hace zoom.
+    // Esculpir (vista orbital): un dedo pinta; dos dedos orbitan (centroide) y pinch hace zoom.
     private fun handleSculpt(e: MotionEvent) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {

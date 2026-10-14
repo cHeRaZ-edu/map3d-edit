@@ -317,11 +317,30 @@ class TerrainRenderer : GLSurfaceView.Renderer {
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 36)
     }
 
-    /** Lleva el personaje al punto del cursor (o la mira) y lo orienta como la vista actual. */
+    /**
+     * Lleva el personaje al cursor del pincel (si se está editando) o, si no, al punto del terreno
+     * que está en el centro de la pantalla, y lo orienta como la vista actual.
+     */
     fun placeAvatarAtCursor() = runOnGl {
-        if (haveCursor) {
-            px = cursorX
-            pz = cursorZ
+        var tx = 0f
+        var tz = 0f
+        var ok = false
+        if (sculptEnabled && haveCursor) {
+            tx = cursorX
+            tz = cursorZ
+            ok = true
+        } else {
+            val ray = screenRay(viewW / 2f, viewH / 2f)
+            val hit = if (ray != null) terrain.raycast(ray[0], ray[1], ray[2], ray[3], ray[4], ray[5]) else null
+            if (hit != null) {
+                tx = hit[0]
+                tz = hit[2]
+                ok = true
+            }
+        }
+        if (ok) {
+            px = tx
+            pz = tz
             if (!walkMode) {
                 yawW = -yaw
                 pitchW = -10f
@@ -486,7 +505,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
     private fun sculptStep() {
         cursorValid = false
         val walking = walkMode
-        if (!walking && !sculptEnabled) {
+        if (!sculptEnabled) {
             endStroke()
             return
         }
@@ -562,7 +581,7 @@ class TerrainRenderer : GLSurfaceView.Renderer {
 
     /** Anillo que sigue el relieve: borde = radio del pincel, interior = mitad (zona fuerte). */
     private fun drawCursor() {
-        if (!(sculptEnabled || walkMode) || !cursorValid) return
+        if (!sculptEnabled || !cursorValid) return
 
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glUseProgram(ringProgram)
